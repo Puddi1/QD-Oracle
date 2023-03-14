@@ -15,11 +15,16 @@ const { ethers } = require("ethers");
  * Setup environment variables
  */
 const ABI = [
-    "function getTokenPrice(address _token) public view returns(uint256)",
+    "function updateOracleFeed(address _token, uint256 _value) external returns(bool)",
+
+    "function getTokenInfo(address _token) public view returns((address ownerToken, uint256 pricePerToken, uint256 avaxDeposited, uint240 avaxIncentives, uint16 rebatePercentageInBPS, bool fungible, string collectionName))",
     "function expiredOracle(address _token) public view returns(bool)",
     "function getFacetPaused() public view returns(bool)",
-    "function updateOracleFeed(address _token, uint256 _value) external returns(bool)",
-    "function getTokenMargin(address _token) public view returns(uint256)",
+    "function getAllApprovedTokens() public view returns(address[] memory)",
+    "function getTokenPeriodAndLastTimestampUpdate(address _token) public view returns(uint256, uint256)",
+    "function isOracleAllowed(address _oracle) public view returns(bool)",
+    "function getNotInitialized(address _token) public view returns(bool)",
+
     "event Token(bool indexed created, address indexed token)",
     "event TokenManaged(address indexed token, uint256 indexed price, uint256 oracleTimestamp, bool _fungible, string data)"
 
@@ -45,19 +50,145 @@ const walletWithProvider = new ethers.Wallet(process.env.ORACLE_WALLET_PRIVATE_K
 const Contract = new ethers.Contract(address, ABI, provider);
 const contract = Contract.connect(walletWithProvider);
 
-console.log('\nProvider defined: ' + JSON.stringify(provider));
-console.log('\nContract defined and connected to oracle\'s wallet: ' + JSON.stringify(contract))
+if (provider != undefined) console.log('\nProvider defined');
+if (contract != undefined) console.log('\nContract defined and connected to oracle\'s wallet');
+
+/**
+ * Function used to initialize and bring up to date the oracle.
+ * 1. it fetches to all approved tokens and updates their values
+ * 2. If a token needs a feeds it looks if it needs to be updated,
+ * if it does need it update gets send
+ * 3. Activates interval for interested feeds.
+ */
+async function init() {
+    console.log("\nInitializing oracle");
+
+    let tokens = (await contract.getAllApprovedTokens());
+
+    for (const e of tokens) {
+        console.log("\nNew token initializated: " + e);
+
+        let tokenInfo = (await contract.getTokenInfo(e));
+        let notInitialized = (await contract.getNotInitialized(e)).toString();
+
+        let pricePerToken = Number(tokenInfo.pricePerToken.toString());
+        let fungible = tokenInfo.fungible;
+        let collectionName = tokenInfo.collectionName;
+        
+        let tokenInstance = {
+            address: e,
+            oldPrice: undefined,
+
+            timestamp: undefined,
+            intervalSetted: false,
+            intervalId: undefined,
+            
+            fungible: undefined,
+            
+            collectionName: undefined
+        }
+
+        if (pricePerToken == 0 && notInitialized == 'false') {
+            console.log('\nUpdating values for: ' + tokenInstance.address);
+            
+            tokenInstance.collectionName = collectionName;
+            console.log('New collection name: ' + tokenInstance.collectionName);
+
+            tokenInstance.fungible = fungible;
+            console.log('New fungible status: ' + tokenInstance.fungible);
+
+            feeds.push(tokenInstance);
+            await oracle(e);
+
+            let currentTimestamp = Number((await provider.getBlock(await provider.getBlockNumber())).timestamp);
+            let times = (await contract.getTokenPeriodAndLastTimestampUpdate(e));
+            let tokenPeriod = Number(times[0].toString());
+            let lastTimestampUpdate = Number(times[1].toString());
+
+            let timeFromUpdate = currentTimestamp - lastTimestampUpdate;
+
+            let timeout = tokenPeriod - timeFromUpdate;
+
+            if (timeout < 0) {
+                timeout = 0;
+            }
+
+            setTimeout(addInitInterval, timeout * 1000, e, tokenPeriod);
+            console.log('\nInitialization completed for: ' + e);
+            console.log('\nAdding interval in: ' + timeout + ' seconds');
+        } else {
+            feeds.push(tokenInstance);
+            console.log('\nNo changes needed for: ' + e);
+        }
+    }
+
+    console.log('\nOracle init completed');
+}
+
+async function addInitInterval(tokenAddress, intervalPeriod) {
+    console.log('\nTimeout started for: ' + tokenAddress);
+
+    let values;
+
+    for (const i of feeds) {
+        if (i.address == tokenAddress) {
+            values = i;
+        }
+    }
+    if (values == undefined) {
+        console.log('\nToken doesnt exist anymore.');
+        return;
+    }
+
+    if (values.intervalSetted == true && values.intervalId != undefined) {
+        console.log('\nTimeout frontrunned for: ' + values.address);
+        return;
+    }
+
+    let tokenInfo = (await contract.getTokenInfo(tokenAddress));
+    let pricePerToken = Number(tokenInfo.pricePerToken.toString());
+    if (pricePerToken != 0) {
+        console.log('\nPrice feed frontrunned for: ' + values.address);
+        return;
+    }
+
+    await oracle(values.address);
+
+    values.timestamp = intervalPeriod;
+
+    values.intervalId = setInterval(oracle, (values.timestamp * 1000) + 300_000, values.address); // 5 min delay
+    values.intervalSetted = true;
+
+    console.log('New ' + (values.timestamp * 1000 + 300_000) / 1000 + ' seconds interval to: ' + values.collectionName);
+}
+
+async function main() {
+    await init();
+}
+main();
+
 console.log('\nOracle Live fetching at address: ' + address);
 
 /**
  * Oracle function, takes address of token, verify ability to update feeds and updates it
  */
 async function oracle(tokenAddress) {
+    // Check if oracle is allowed
+    let allowed = (await contract.isOracleAllowed(walletWithProvider.address)).toString();
+    if (allowed == 'false') {
+        console.log("\nOracle address is not  allowed : " + walletWithProvider.address);
+        return;
+    }
+
     let values
     for (const i of feeds) {
         if (i.address == tokenAddress) {
             values = i;
         }
+    }
+    if (values == undefined) {
+        console.log('\nToken doesnt exist anymore.');
+        return;
     }
 
     console.log("\nOracle started for: " + values.collectionName);
@@ -77,12 +208,12 @@ async function oracle(tokenAddress) {
     }
 
     // Add filter price: getTokenMargin
-    let margin = Number((await contract.getTokenMargin(tokenAddress)).toString());
+    let margin = Number((await contract.getTokenInfo(tokenAddress)).avaxDeposited.toString());
     let price = values.oldPrice * 1e18
-    if (values.oldPrice != undefined && values.fungible && margin / 1e17 >= 1) {
+    if (values.oldPrice != undefined && values.fungible && margin / 1e17 <= 1) {
         console.log('Not enough margin to update it : ' + values.collectionName);
         return;
-    } else if (values.oldPrice != undefined && !values.fungible && margin / price >= 1) {
+    } else if (values.oldPrice != undefined && !values.fungible && margin / price <= 1) {
         console.log('Not enough margin to update it : ' + values.collectionName);
         return;
     }
@@ -124,15 +255,43 @@ async function oracle(tokenAddress) {
     let tx;
     let recepit;
     if (values.fungible) {
-        tx = await contract.updateOracleFeed(tokenAddress, ethers.utils.parseEther('' + response.price));
-        recepit = await tx.wait(1);
-        values.oldPrice = response.price;
-        console.log(values.collectionName + ' Fungible token price updated at tx hash: ' + recepit.transactionHash + ' With token price of: ' + values.oldPrice);
+        try {
+            tx = await contract.updateOracleFeed(tokenAddress, ethers.utils.parseEther('' + response.price));
+            recepit = await tx.wait(1);
+
+            values.oldPrice = response.price;
+            console.log(values.collectionName + ' Fungible token price updated at tx hash: ' + recepit.transactionHash + ' With token price of: ' + values.oldPrice);
+        } catch (err) {
+            console.log(values.collectionName + ' Fungible token price ERROR');
+            console.log(err);
+
+            if (err.response) {
+                if (err.response.status == 503) { // timeout error
+                    await oracle(tokenAddress);
+                }
+            }
+
+            return;
+        }
     } else if (!values.fungible) {
-        tx = await contract.updateOracleFeed(tokenAddress, ethers.utils.parseEther('' + response.floor));
-        recepit = await tx.wait(1);
-        values.oldPrice = response.floor;
-        console.log(values.collectionName + ' Non-Fungiblle token price updated at tx hash: ' + recepit.transactionHash + ' With token price of: ' + values.oldPrice);
+        try {
+            tx = await contract.updateOracleFeed(tokenAddress, ethers.utils.parseEther('' + response.floor));
+            recepit = await tx.wait(1);
+
+            values.oldPrice = response.floor;
+            console.log(values.collectionName + ' Non-Fungiblle token price updated at tx hash: ' + recepit.transactionHash + ' With token price of: ' + values.oldPrice);
+        } catch (err) {
+            console.log(values.collectionName + ' Non-Fungible token price ERROR');
+            console.log(err);
+
+            if (err.response) {
+                if (err.response.status == 503) { // timeout error
+                    await oracle(tokenAddress);
+                }
+            }
+
+            return;
+        }
     }
 }
 
