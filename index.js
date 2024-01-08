@@ -1,5 +1,5 @@
 /**
- * QuarryDraw avalanche Oracle
+ * QuarryDraw avalanche price feeds Oracle
  */
 
 /**
@@ -74,7 +74,7 @@ async function init() {
         let pricePerToken = Number(tokenInfo.pricePerToken.toString());
         let fungible = tokenInfo.fungible;
         let collectionName = tokenInfo.collectionName;
-        
+
         let tokenInstance = {
             address: e,
             oldPrice: undefined,
@@ -82,15 +82,15 @@ async function init() {
             timestamp: undefined,
             intervalSetted: false,
             intervalId: undefined,
-            
+
             fungible: undefined,
-            
+
             collectionName: undefined
         }
 
         if (pricePerToken == 0 && notInitialized == 'false') {
             console.log('\nUpdating values for: ' + tokenInstance.address);
-            
+
             tokenInstance.collectionName = collectionName;
             console.log('New collection name: ' + tokenInstance.collectionName);
 
@@ -221,20 +221,19 @@ async function oracle(tokenAddress) {
     // Get price
     let response;
     if (values.fungible) {
-        // requestURL = baseURL + '/Moralis/TokenPrice/AVALANCHE/' + tokenAddress + 'avalanche-2';
-        // response = await axios.get(requestURL)
-        //     .then(function (res) {
-        //         console.log("Correct server response");
-        //         return res.data;
-        //     })
-        //     .catch(function (error) {
-        //         console.log("\nFungible response error\n" + error);
-        //         return;
-        //     });
-        // if (response == undefined) {
-        //     return;
-        // }
-        response = {price: 0.01}
+        requestURL = baseURL + '/Moralis/TokenPrice/AVALANCHE/' + tokenAddress + 'avalanche-2';
+        response = await axios.get(requestURL)
+            .then(function (res) {
+                console.log("Correct server response");
+                return res.data;
+            })
+            .catch(function (error) {
+                console.log("\nFungible response error\n" + error);
+                return;
+            });
+        if (response == undefined) {
+            return;
+        }
     } else if (!values.fungible) {
         requestURL = baseURL + 'QuarryDraw/OpenseaCollection/' + values.collectionName + '/avalanche-2/true/false';
         response = await axios.get(requestURL)
@@ -307,6 +306,7 @@ filter = {
         ]
     ]
 };
+
 /**
  * Create token feed once it gets created. Based on 
  * event Token(bool indexed created, address indexed token);
@@ -340,14 +340,15 @@ contract.on("Token", async (created, token) => {
                     console.log('Deleting interval of: ' + token);
                     clearInterval(feeds[i].intervalId);
                     i.intervalId = undefined;
-                    i.intervalSetted = false; 
+                    i.intervalSetted = false;
                 }
 
-                feeds.splice(i ,1);
+                feeds.splice(i, 1);
             }
         }
     }
 });
+
 /**
  * Add remove update interval for a token and update feed if margin changes. Based on
  * event TokenManaged(address indexed token, uint256 indexed price, uint256 oracleTimestamp, string data);
