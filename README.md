@@ -1,4 +1,4 @@
-# Oracle
+# Quarry Draw Oracle
 
 This is a three repo project: Quarry Draw Oracle, [Quarry Draw Oracle Server](https://github.com/Puddi1/QD-OracleServer) and [Quarry Draw Validator Contracts](https://github.com/Puddi1/QD-Validator-Contracts).
 
