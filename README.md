@@ -17,7 +17,7 @@ Start with adding the environment variables in your `.env` that are needed in th
 
 For syntax example refer to `.env.example`
 
-Before running the script install al required packages:
+Before running the script install all required packages:
 ```sh
 npm i
 ```
